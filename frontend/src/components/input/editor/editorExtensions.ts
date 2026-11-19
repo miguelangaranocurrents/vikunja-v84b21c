@@ -3,7 +3,7 @@ import {nextTick, toValue, type MaybeRefOrGetter, type Ref} from 'vue'
 import StarterKit from '@tiptap/starter-kit'
 import {createNodeFromContent, Extension, mergeAttributes, type Editor, type Extensions} from '@tiptap/core'
 import {Plugin, PluginKey} from '@tiptap/pm/state'
-import {Fragment} from '@tiptap/pm/model'
+import {Fragment, type Node as PMNode} from '@tiptap/pm/model'
 import {marked} from 'marked'
 
 import Link from '@tiptap/extension-link'
@@ -232,6 +232,7 @@ export function createEditorExtensions(deps: EditorExtensionDeps): Extensions {
 					key: new PluginKey('pasteHandler'),
 					props: {
 						clipboardParser: createClipboardParser(this.editor.schema),
+						clipboardTextSerializer: slice => serializeSliceAsText(slice.content),
 						transformPasted: slice => repairSliceContent(slice),
 
 						handlePaste: (view, event) => {
@@ -406,4 +407,52 @@ export function createEditorExtensions(deps: EditorExtensionDeps): Extensions {
 
 		PasteHandler,
 	]
+}
+
+const LIST_NODES = ['bulletList', 'orderedList', 'taskList']
+
+function inlineText(node: PMNode): string {
+	if (node.isText) return node.text ?? ''
+	if (node.type.name === 'hardBreak') return '\n'
+	if (node.childCount === 0) return node.textContent
+	let out = ''
+	node.forEach(child => {
+		out += inlineText(child)
+	})
+	return out
+}
+
+function blockLines(node: PMNode): string[] {
+	const name = node.type.name
+	if (LIST_NODES.includes(name)) {
+		const lines: string[] = []
+		node.forEach((item, _offset, index) => {
+			const marker = name === 'orderedList' ? `${index + 1}. ` : '- '
+			const itemLines: string[] = []
+			item.forEach(child => {
+				itemLines.push(...blockLines(child))
+			})
+			itemLines.forEach((line, i) => lines.push((i === 0 ? marker : ' '.repeat(marker.length)) + line))
+		})
+		return lines
+	}
+	if (node.isTextblock || node.childCount === 0) {
+		return [inlineText(node)]
+	}
+	const lines: string[] = []
+	node.forEach(child => {
+		lines.push(...blockLines(child))
+	})
+	return lines
+}
+
+/**
+ * Plain-text serialization for copy: like ProseMirror's default, but keeps list markers.
+ */
+export function serializeSliceAsText(content: Fragment): string {
+	const blocks: string[] = []
+	content.forEach(node => {
+		blocks.push(blockLines(node).join(LIST_NODES.includes(node.type.name) ? '\n' : '\n\n'))
+	})
+	return blocks.join('\n\n')
 }
